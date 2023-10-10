@@ -1,0 +1,4 @@
+openai
+huggingface_hub
+python-dotenv
+tenacity
