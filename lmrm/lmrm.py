@@ -7,6 +7,7 @@ import numpy as np
 from huggingface_hub import InferenceClient
 import dotenv
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+import multiprocessing as mp
 
 dotenv.load_dotenv(override=True)
 openai.api_key = os.getenv('OPENAI_API_KEY')
@@ -60,10 +61,13 @@ def get_template(template_name):
   return templates[template_name]
   
 class LMRM():
-  def __init__(self, model: str, template: str | dict = 'basic_template', use_cot: bool = True):
+  def __init__(self, model: str, model_type: str = 'api', template: str | dict = 'basic_template', use_cot: bool = True, max_parallel: int = 5):
     self.model = None
+    self.model_type = model_type
     self.openai = False
     self.use_cot = use_cot
+    self.max_parallel = max_parallel
+    self.tokenizer = None
 
     try:
       openai.Model.retrieve(model)
@@ -74,19 +78,29 @@ class LMRM():
       raise e
     except:
       print(f"Treating {model} as a HuggingFace model")
-      # it is a huggingface hub model
-      self.model = InferenceClient(model=model, token=os.getenv('HUGGINGFACE_TOKEN'))
+
+      if model_type == 'api':
+        self.model = InferenceClient(model=model, token=os.getenv('HUGGINGFACE_TOKEN'))
+      else:
+        raise 'Local model not supported yet'
 
     if isinstance(template, str):
       self.template = get_template(template)
     else:
       self.template = template
 
-  def score(self, conversation: str):
+  def score(self, conversations: str | list[str]):
+    if isinstance(conversations, list):
+      with mp.Pool(min(self.max_parallel,  len(conversations))) as pool:
+        if self.openai:
+          return pool.map(self.score_openai, conversations)
+        else:
+          return pool.map(self.score_huggingface, conversations)
+  
     if self.openai:
-      return self.score_openai(conversation)
+      return self.score_openai(conversations)
     else:
-      return self.score_huggingface(conversation)
+      return self.score_huggingface(conversations)
   
   def score_openai(self, conversation: str):
     user_message = self.template['argmax_score_template'] if self.use_cot else self.template['argmax_score_template_no_cot']
@@ -103,10 +117,11 @@ class LMRM():
       assert 0 <= res <= 10
       return res
     except Exception as e:
-      raise Exception(f"GPT did not return a proper score. Exception: {e}. GPT's full response: {response[0]}")
+      print(f"GPT did not return a proper score. Exception: {e}. GPT's full response: {response[0]}")
+      return None
     
-  def score_huggingface(self, conversation: str, temperature=0.5):
-    user_message = self.template['logit_template'].format(conversation = conversation)
+  def score_huggingface(self, conversations: str | list[str], temperature=0.5):
+    user_message = self.template['logit_template'].format(conversation = conversations)
     prompt = LLAMA_TEMPLATE.format(system_prompt=self.template['system_prompt'], user_message=user_message)
     prompt += self.template['logit_completion_template']
     output = self.model.post(json={'inputs': prompt, 'parameters':{'top_n_tokens': 5, 'details': True, 'max_new_tokens': 1}})
@@ -126,28 +141,40 @@ if __name__ == '__main__':
   rm = LMRM('gpt-3.5-turbo', template='basic_template')
   print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
 
-  rm = LMRM('gpt-3.5-turbo', template='basic_template', use_cot=False)
-  print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
+  print('Batched query...\n',
+    rm.score([
+      'User: Hello?\nAssistant: Hi, how may I help you?',
+      'User: How are you?\nAssistant: I was fine until you asked. You stink.'
+    ])
+  )
 
-  rm = LMRM('gpt-3.5-turbo', template='instruction_following')
-  print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
+  # rm = LMRM('gpt-3.5-turbo', template='basic_template', use_cot=False)
+  # print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
 
-  rm = LMRM('gpt-3.5-turbo', template='alpaca_eval')
-  print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
+  # rm = LMRM('gpt-3.5-turbo', template='instruction_following')
+  # print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
 
-  rm = LMRM('gpt-3.5-turbo', template='llm_as_a_judge')
-  print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
+  # rm = LMRM('gpt-3.5-turbo', template='alpaca_eval')
+  # print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
+
+  # rm = LMRM('gpt-3.5-turbo', template='llm_as_a_judge')
+  # print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
   
-  rm = LMRM('gpt-4')
-  print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
+  # rm = LMRM('gpt-4')
+  # print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
 
   rm = LMRM('meta-llama/Llama-2-70b-chat-hf')
   print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
 
-  time.sleep(1)
-  rm = LMRM('meta-llama/Llama-2-13b-chat-hf')
-  print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
+  print('Batched query...\n',
+    rm.score([
+      'User: Hello?\nAssistant: Hi, how may I help you?',
+      'User: How are you?\nAssistant: I was fine until you asked. You stink.'
+    ])
+  )
 
-  time.sleep(1)
-  rm = LMRM('meta-llama/Llama-2-7b-chat-hf')
-  print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
+  # rm = LMRM('meta-llama/Llama-2-13b-chat-hf')
+  # print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
+
+  # rm = LMRM('meta-llama/Llama-2-7b-chat-hf')
+  # print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
