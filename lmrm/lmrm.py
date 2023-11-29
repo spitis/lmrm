@@ -9,6 +9,7 @@ from transformers import BitsAndBytesConfig
 from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer
 import transformers
 import torch
+import time
 
 import dotenv
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -17,6 +18,12 @@ import multiprocessing as mp
 dotenv.load_dotenv(override=True)
 openai.api_key = os.getenv('OPENAI_API_KEY')
 openai.organization = os.getenv('OPENAI_ORGANIZATION')
+if os.getenv('OPENAI_API_TYPE') is not None:
+  openai.api_type = os.getenv('OPENAI_API_TYPE')
+if os.getenv('OPENAI_API_BASE') is not None:
+  openai.api_base = os.getenv('OPENAI_API_BASE')
+if os.getenv('OPENAI_API_VERSION') is not None:
+  openai.api_version = os.getenv('OPENAI_API_VERSION')
 
 LLAMA_TEMPLATE = """<s>[INST] <<SYS>>
 {system_prompt}
@@ -55,11 +62,12 @@ def load_hf_model(model_name, quantization_config):
 
   tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side='left')
 
-  tokenizer.pad_token = tokenizer.eos_token
-  model.resize_token_embeddings(len(tokenizer), pad_to_multiple_of=16)
-  tokenizer.pad_token_id = tokenizer.eos_token_id
-  model.config.end_token_id = tokenizer.eos_token_id
-  model.config.pad_token_id = model.config.eos_token_id
+  model.config.eos_token_id = tokenizer.eos_token_id
+  if not tokenizer.pad_token:
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.pad_token_id = tokenizer.eos_token_id
+    model.resize_token_embeddings(len(tokenizer), pad_to_multiple_of=16)
+    model.config.pad_token_id = model.config.eos_token_id
   
   return model, tokenizer
 
@@ -105,7 +113,7 @@ def get_template(template_name):
   return templates[template_name]
   
 class LMRM():
-  def __init__(self, model: str | type[transformers.PreTrainedModel], tokenizer: type[transformers.PreTrainedTokenizer] = None, model_type = 'api', template: str | dict = 'basic_template', max_score = 5, use_cot: bool = True, max_parallel: int = 5, meta_template: str = LLAMA_TEMPLATE, quantization_config: type[BitsAndBytesConfig] = quantization_config_4bit, temperature: float = 0.5):
+  def __init__(self, model: str | type[transformers.PreTrainedModel], tokenizer: type[transformers.PreTrainedTokenizer] = None, model_type: str = 'api', template: str | dict = 'basic_template', max_score = 7, use_cot: bool = True, max_parallel: int = 5, meta_template: str = LLAMA_TEMPLATE, quantization_config: type[BitsAndBytesConfig] = quantization_config_4bit, temperature: float = 1.):
     self.model = None
     self.model_type = model_type
     self.openai = False
@@ -122,19 +130,26 @@ class LMRM():
       self.model = model
       self.tokenizer = tokenizer
       assert tokenizer.padding_side == 'left'
-    else: 
-      try:
-        openai.Model.retrieve(model)
-        self.model = model
-        self.openai = True
-        print(f"Found {model} in OpenAI directory! Treating as OpenAI model.")
-      except openai.error.AuthenticationError as e:
-        raise e
-      except:
+    else:
+      if model_type == 'openai':
+        models = [m['id'] for m in openai.Model.list()['data']]
+        try:
+          openai.Model.retrieve(model)
+          self.model = model
+          self.openai = True
+          print(f"Found {model} in OpenAI directory! Treating as OpenAI model.")
+        except openai.error.AuthenticationError as e:
+          print(e)
+          raise e
+        except Exception as e:
+          if model in models:
+            raise ValueError(f"Model {model} is an OpenAI model but is not available. Please use a HuggingFace model instead.")
+          raise e
+      else:
+        assert model_type in ['api', 'local']
         print(f"Treating {model} as a HuggingFace model")
 
         if model_type == 'api':
-          self.max_score = 5
           self.model = InferenceClient(model=model, token=os.getenv('HUGGINGFACE_TOKEN'))
         elif model_type == 'local':
           print('Loading local model...')
@@ -151,8 +166,16 @@ class LMRM():
 
     if self.tokenizer is not None:
       tokenizer = self.tokenizer
-      self.score_tokens = [tokenizer('1'), tokenizer('2'), tokenizer('3'), tokenizer('4'), tokenizer('5'), tokenizer('6'), tokenizer('7')][:int(self.max_score)]
-      self.score_tokens = [t['input_ids'][0] for t in self.score_tokens]
+      self.score_tokens = [
+        tokenizer('1', add_special_tokens=False), 
+        tokenizer('2', add_special_tokens=False), 
+        tokenizer('3', add_special_tokens=False), 
+        tokenizer('4', add_special_tokens=False), 
+        tokenizer('5', add_special_tokens=False), 
+        tokenizer('6', add_special_tokens=False), 
+        tokenizer('7', add_special_tokens=False)
+        ][:int(self.max_score)]
+      self.score_tokens = [t['input_ids'][-1] for t in self.score_tokens]
 
   def score(self, conversations: str | list[str]):
     if self.model_type == 'local':
@@ -195,15 +218,24 @@ class LMRM():
     user_message = self.template['logit_template'].format(conversation = conversations)
     prompt = self.meta_template.format(system_prompt=self.template['system_prompt'], user_message=user_message)
     prompt += self.template['logit_completion_template']
-    output = self.model.post(json={'inputs': prompt, 'parameters':{'top_n_tokens': 5, 'details': True, 'max_new_tokens': 1}})
+
+    for _ in range (5):
+      try:
+        output = self.model.post(json={'inputs': prompt, 'parameters':{'top_n_tokens': 5, 'details': True, 'max_new_tokens': 1}})
+        break
+      except Exception as e:
+        print(f"Exception {e} occurred. Retrying...")
+        time.sleep(5)
+
     top_tokens = json.loads(output)[0]['details']['top_tokens'][0]
     top_tokens = {t['text']:t['logprob'] for t in top_tokens}
-    scores = np.array([top_tokens.get(str(i), -100.) for i in range(1,6)])
+    scores = np.array([top_tokens.get(str(i), -100.) for i in range(1,self.max_score+1)])    
+
     scores = scores / self.temperature
     scores -= np.max(scores)
     scores = np.exp(scores)
     scores = scores / np.sum(scores)
-    return np.arange(5).dot(scores) * 9/4 + 1 # normalize to 1-10
+    return np.arange(self.max_score).dot(scores) * 9/(self.max_score - 1) + 1 # normalize to 1-10
 
   def score_local(self, conversations: list[str], return_scalar: bool = False):
     model = self.model
@@ -212,11 +244,11 @@ class LMRM():
     prompt = [p + self.template['logit_completion_template'] for p in prompt]
     
     with torch.no_grad():
-      inputs = self.tokenizer(prompt, add_special_tokens=False, return_tensors='pt', padding=True).to(model.device)
+      inputs = self.tokenizer(prompt, return_tensors='pt', padding=True).to(model.device)
 
       logits = torch.log_softmax(model(**inputs)['logits'].to(torch.float32), -1)
       logprobs = logits[:, -1, self.score_tokens].to('cpu').numpy()
-
+      
       scores = logprobs / self.temperature
       scores -= np.max(scores, axis=-1, keepdims=True)
       scores = np.exp(scores)
@@ -227,59 +259,3 @@ class LMRM():
         return scores[0]
       return scores
 
-
-if __name__ == '__main__':
-  print("Testing LMRM")
-  import time
-
-  rm = LMRM('gpt-3.5-turbo', template='basic_template')
-  print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
-
-  print('Batched query...\n',
-    rm.score([
-      'User: Hello?\nAssistant: Hi, how may I help you?',
-      'User: How are you?\nAssistant: I was fine until you asked. You stink.'
-    ])
-  )
-
-  # rm = LMRM('gpt-3.5-turbo', template='basic_template', use_cot=False)
-  # print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
-
-  # rm = LMRM('gpt-3.5-turbo', template='instruction_following')
-  # print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
-
-  # rm = LMRM('gpt-3.5-turbo', template='alpaca_eval')
-  # print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
-
-  # rm = LMRM('gpt-3.5-turbo', template='llm_as_a_judge')
-  # print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
-  
-  # rm = LMRM('gpt-4')
-  # print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
-
-  rm = LMRM('meta-llama/Llama-2-70b-chat-hf')
-  print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
-
-  print('Batched query...\n',
-    rm.score([
-      'User: Hello?\nAssistant: Hi, how may I help you?',
-      'User: How are you?\nAssistant: I was fine until you asked. You stink.'
-    ])
-  )
-
-  # rm = LMRM('meta-llama/Llama-2-13b-chat-hf')
-  # print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
-
-  # rm = LMRM('meta-llama/Llama-2-7b-chat-hf')
-  # print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
-
-
-  rm = LMRM("EleutherAI/pythia-1b", model_type='local')
-  print(rm.score('User: Hello?\nAssistant: Hi, how may I help you?'))
-
-  print('Batched query...\n',
-    rm.score([
-      'User: Hello?\nAssistant: Hi, how may I help you?',
-      'User: How are you?\nAssistant: I was fine until you asked. You stink.'
-    ])
-  )

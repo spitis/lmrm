@@ -2,3 +2,12 @@ openai
 huggingface_hub
 python-dotenv
 tenacity
+matplotlib
+transformers
+torchk
+bitsandbytes
+jupyter
+accelerate
+protobuf
+sentencepiece
+scipy
