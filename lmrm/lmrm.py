@@ -10,6 +10,7 @@ from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokeni
 import transformers
 import torch
 import time
+from argparse import Namespace as AttrDict
 
 import dotenv
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -24,6 +25,16 @@ if os.getenv('OPENAI_API_BASE') is not None:
   openai.api_base = os.getenv('OPENAI_API_BASE')
 if os.getenv('OPENAI_API_VERSION') is not None:
   openai.api_version = os.getenv('OPENAI_API_VERSION')
+
+if not hasattr(openai, 'error'):
+  openai.error = AttrDict()
+  openai.error.Timeout = openai.Timeout
+  openai.error.APIError = openai.APIError
+  openai.error.APIConnectionError = openai.APIConnectionError
+  openai.error.RateLimitError = openai.RateLimitError
+  openai.error.AuthenticationError = openai.AuthenticationError
+
+
 
 LLAMA_TEMPLATE = """<s>[INST] <<SYS>>
 {system_prompt}
@@ -132,19 +143,8 @@ class LMRM():
       assert tokenizer.padding_side == 'left'
     else:
       if model_type == 'openai':
-        models = [m['id'] for m in openai.Model.list()['data']]
-        try:
-          openai.Model.retrieve(model)
-          self.model = model
-          self.openai = True
-          print(f"Found {model} in OpenAI directory! Treating as OpenAI model.")
-        except openai.error.AuthenticationError as e:
-          print(e)
-          raise e
-        except Exception as e:
-          if model in models:
-            raise ValueError(f"Model {model} is an OpenAI model but is not available. Please use a HuggingFace model instead.")
-          raise e
+        self.model = model
+        self.openai = True
       else:
         assert model_type in ['api', 'local']
         print(f"Treating {model} as a HuggingFace model")
@@ -220,6 +220,7 @@ class LMRM():
     prompt += self.template['logit_completion_template']
 
     for _ in range (5):
+      
       try:
         output = self.model.post(json={'inputs': prompt, 'parameters':{'top_n_tokens': 5, 'details': True, 'max_new_tokens': 1}})
         break
@@ -242,7 +243,7 @@ class LMRM():
     user_message = [self.template['logit_template'].format(conversation = c) for c in conversations]
     prompt = [self.meta_template.format(system_prompt=self.template['system_prompt'], user_message=u) for u in user_message]
     prompt = [p + self.template['logit_completion_template'] for p in prompt]
-    
+      
     with torch.no_grad():
       inputs = self.tokenizer(prompt, return_tensors='pt', padding=True).to(model.device)
 

@@ -1,13 +1,14 @@
-openai
+openai==0.28.0
 huggingface_hub
 python-dotenv
 tenacity
 matplotlib
 transformers
-torchk
+torch
 bitsandbytes
 jupyter
 accelerate
 protobuf
 sentencepiece
 scipy
+datasets
