@@ -61,6 +61,8 @@ if __name__ == "__main__":
       elif 'openai' in filename:
         scores = [5.0 if s is None else s for s in scores]
       
+      if not type(r['labels']) == list:
+        r['labels'] = [r['labels']]
       if not args.dedupe_mtbench:
         labels = r['labels']
         labels = np.array(labels) - 0.5

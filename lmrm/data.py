@@ -4,13 +4,14 @@ import torch
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from .util import flatten_conversation
+import json
 
 class MultiTurnComparisonDataset(Dataset):
   """
   Subclasses should have a property 'samples' which is a list of:
   {
-    'a': str,
-    'b': str,
+    'a': str or messages (openai format),
+    'b': str or messages (openai format),
     'labels': List[int] if turnwise else int
   }
   """
@@ -33,6 +34,78 @@ class MultiTurnComparisonDataset(Dataset):
       }
     return self.samples[idx]
 
+class MultiTurnCriteriaComparisonDataset(MultiTurnComparisonDataset):
+  """
+  Subclasses should have a property 'samples' which is a list of:
+  {
+    'a': str or messages (openai format),
+    'b': str or messages (openai format),
+    'criteria': str,
+    'labels': List[int] if turnwise else int
+  }
+  """
+  
+  def __getitem__(self, idx):
+    if self.flatten:
+      return {
+        'a': flatten_conversation(self.samples[idx]['a']),
+        'b': flatten_conversation(self.samples[idx]['b']),
+        'criteria': self.samples[idx]['criteria'],
+        'labels': torch.tensor(self.samples[idx]['labels'])
+      }
+    return self.samples[idx]
+
+class RPR(MultiTurnCriteriaComparisonDataset):
+  def __init__(self, **kwargs):
+    super().__init__(**kwargs)
+
+    # load the proposals dataset
+    with open('./RPR/results.json', 'r') as f:
+      dataset = json.load(f)
+
+    with open('./RPR/verifications.json', 'r') as f:
+      verifications = json.load(f)
+
+    verification_set = {}
+
+    for i in range(len(dataset)):
+      k = str(i)
+      if not k in verifications:
+        continue
+      
+      if verifications[k]['accept'] != 1:
+        continue
+
+      verification_set[k] = dataset[k]
+
+      if len(verification_set) >= 1000:
+        break
+
+    keys = list(verification_set.keys())
+    # seed numpy and choose 100 at random
+    np.random.seed(42)
+    np.random.shuffle(keys)
+
+    samples = []
+    num_samples = self.max_samples if self.max_samples is not None else len(keys)
+
+    for k in keys[:num_samples]:
+      # randomly sample the criteria
+      c = np.random.randint(0, 2)
+
+      samples.append({
+        'a': [
+          {'role': 'user', 'content': verification_set[k]['prompt']},
+          {'role': 'assistant', 'content': verification_set[k]['response_a']}
+        ],
+        'b': [
+          {'role': 'user', 'content': verification_set[k]['prompt']},
+          {'role': 'assistant', 'content': verification_set[k]['response_b']}
+        ],
+        'criteria': verification_set[k]['criteria_x'] if c == 0 else verification_set[k]['criteria_y'],
+        'labels': c
+      })
+    self.samples = samples
 
 class MTBench(MultiTurnComparisonDataset):
   def __init__(self, **kwargs):
