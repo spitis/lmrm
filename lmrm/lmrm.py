@@ -43,12 +43,10 @@ LLAMA_TEMPLATE = """<s>[INST] <<SYS>>
 {user_message} [/INST] """
 
 
-quantization_config_4bit = BitsAndBytesConfig(
-   load_in_4bit=True,
-   bnb_4bit_quant_type="nf4",
-   bnb_4bit_use_double_quant=True,
-   bnb_4bit_compute_dtype=torch.bfloat16
-)
+from accelerate.utils import BnbQuantizationConfig
+quantization_config_4bit = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
+quantization_config_8bit = BitsAndBytesConfig(load_in_8bit=True, llm_int8_threshold=0.0)
+
 
 def get_hf_model_name(model_name):
   if model_name == 'llama2-70b-chat':
@@ -211,6 +209,8 @@ class LMRM():
       assert 0 <= res <= 10
       return res
     except Exception as e:
+      if "AI assistant's response a" in response[0]:
+        return response[0].split('AI assistant\'s response a')[1].split('.')[0]
       print(f"GPT did not return a proper score. Exception: {e}. GPT's full response: {response[0]}")
       return None
     

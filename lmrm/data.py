@@ -34,13 +34,13 @@ class MultiTurnComparisonDataset(Dataset):
       }
     return self.samples[idx]
 
-class MultiTurnCriteriaComparisonDataset(MultiTurnComparisonDataset):
+class MultiTurnContextComparisonDataset(MultiTurnComparisonDataset):
   """
   Subclasses should have a property 'samples' which is a list of:
   {
     'a': str or messages (openai format),
     'b': str or messages (openai format),
-    'criteria': str,
+    'context': str,
     'labels': List[int] if turnwise else int
   }
   """
@@ -50,38 +50,18 @@ class MultiTurnCriteriaComparisonDataset(MultiTurnComparisonDataset):
       return {
         'a': flatten_conversation(self.samples[idx]['a']),
         'b': flatten_conversation(self.samples[idx]['b']),
-        'criteria': self.samples[idx]['criteria'],
+        'context': self.samples[idx]['context'],
         'labels': torch.tensor(self.samples[idx]['labels'])
       }
     return self.samples[idx]
 
-class RPR(MultiTurnCriteriaComparisonDataset):
+class RPRCriteria(MultiTurnContextComparisonDataset):
   def __init__(self, **kwargs):
     super().__init__(**kwargs)
 
-    # load the proposals dataset
-    with open('./RPR/results.json', 'r') as f:
-      dataset = json.load(f)
+    dataset = load_dataset("spitis/rpr_criteria", split="train")
 
-    with open('./RPR/verifications.json', 'r') as f:
-      verifications = json.load(f)
-
-    verification_set = {}
-
-    for i in range(len(dataset)):
-      k = str(i)
-      if not k in verifications:
-        continue
-      
-      if verifications[k]['accept'] != 1:
-        continue
-
-      verification_set[k] = dataset[k]
-
-      if len(verification_set) >= 1000:
-        break
-
-    keys = list(verification_set.keys())
+    keys = list(range(len(dataset)))
     # seed numpy and choose 100 at random
     np.random.seed(42)
     np.random.shuffle(keys)
@@ -95,17 +75,50 @@ class RPR(MultiTurnCriteriaComparisonDataset):
 
       samples.append({
         'a': [
-          {'role': 'user', 'content': verification_set[k]['prompt']},
-          {'role': 'assistant', 'content': verification_set[k]['response_a']}
+          {'role': 'user', 'content': dataset[k]['prompt']},
+          {'role': 'assistant', 'content': dataset[k]['response_a']}
         ],
         'b': [
-          {'role': 'user', 'content': verification_set[k]['prompt']},
-          {'role': 'assistant', 'content': verification_set[k]['response_b']}
+          {'role': 'user', 'content': dataset[k]['prompt']},
+          {'role': 'assistant', 'content': dataset[k]['response_b']}
         ],
-        'criteria': verification_set[k]['criteria_x'] if c == 0 else verification_set[k]['criteria_y'],
+        'context': dataset[k]['criteria_x'] if c == 0 else dataset[k]['criteria_y'],
         'labels': c
       })
     self.samples = samples
+
+class RPRScenarios(MultiTurnContextComparisonDataset):
+  def __init__(self, **kwargs):
+    super().__init__(**kwargs)
+
+    dataset = load_dataset("spitis/rpr_scenarios", split="train")
+
+    keys = list(range(len(dataset)))
+    # seed numpy and choose 100 at random
+    np.random.seed(42)
+    np.random.shuffle(keys)
+
+    samples = []
+    num_samples = self.max_samples if self.max_samples is not None else len(keys)
+
+    for k in keys[:num_samples]:
+      # randomly sample the criteria
+      c = np.random.randint(0, 2)
+
+      samples.append({
+        'a': [
+          {'role': 'user', 'content': dataset[k]['prompt']},
+          {'role': 'assistant', 'content': dataset[k]['more_pref'] if c == 0 else dataset[k]['less_pref']}
+        ],
+        'b': [
+          {'role': 'user', 'content': dataset[k]['prompt']},
+          {'role': 'assistant', 'content': dataset[k]['less_pref'] if c == 0 else dataset[k]['more_pref']}
+        ],
+        'context': dataset[k]['scenario'],
+        'labels': c
+      })
+    self.samples = samples
+
 
 class MTBench(MultiTurnComparisonDataset):
   def __init__(self, **kwargs):
@@ -201,3 +214,57 @@ class MTBenchCombined(MultiTurnComparisonDataset):
       })
     self.samples = samples[:self.max_samples] if self.max_samples is not None else samples
 
+
+class MTBenchTurn2(MultiTurnContextComparisonDataset):
+  def __init__(self, **kwargs):
+    super().__init__(**kwargs)
+
+    dataset = load_dataset("lmsys/mt_bench_human_judgments", split='human')
+    qids = np.arange(81, 161)
+    np.random.seed(42)
+    np.random.shuffle(qids)
+
+    if 'val' in self.split:
+      ids = qids[60:]
+    elif 'tr' in self.split:
+      ids = qids[:60]
+    else:
+      ids = qids
+      
+    qs = {}
+    for d in dataset:
+      i = d['question_id']
+      if i in ids:
+        key = f"{i}-{d['model_a']}-{d['model_b']}-{d['judge']}"
+        if key in qs:
+          qs[key].append(d)
+        else:
+          qs[key] = [d]
+
+    samples = []
+    for k, q in qs.items():
+      if len(q) != 2:
+        continue
+      if q[0]['turn'] == 2:
+        Q = [q[1], q[0]]
+      else:
+        Q = q
+      
+      SCORE_MAP = {
+        'model_a': 0,
+        'model_b': 1,
+        'tie': 2
+      }
+      
+      #eliminate ties
+      if SCORE_MAP[Q[1]['winner']] == 2:
+        continue
+      
+      samples.append({
+        'a': q[0]['conversation_a'][2:],
+        'b': q[0]['conversation_b'][2:],
+        'context': f"Previously, the user asked: '{q[0]['conversation_a'][0]['content']}', and the assistant gave its response (not shown).",
+        'labels': SCORE_MAP[Q[1]['winner']]
+      })
+
+    self.samples = samples[:self.max_samples] if self.max_samples is not None else samples

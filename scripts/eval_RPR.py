@@ -9,14 +9,24 @@ from transformers import PreTrainedModel, LlamaConfig, LlamaModel, LlamaTokenize
 from typing import Optional, List
 from copy import deepcopy
 
-TEMPLATE = {
+CRITERIA_TEMPLATE = {
     "type": "logit_rating",
     "name": "criteria_template",
-    "system_prompt": "You are a helpful assistant, that scores other AI assistants based on a given criteria and the quality of their answers.",
-    "logit_template": "Rate the quality of the AI assistant's response(s) in the conversation displayed below according to the following criteria:\n\n{criteria}\n\nYour score should reflect the quality of the AI assistant's response(s) with respect to the specific criteria above, ignoring other aspects of the answer (such as overall quality), and should agree with the score provided by a reasonable human evaluator. Please rate the assistant's response(s) on a scale of 1 to {max_score}, where 1 corresponds to extremely poor (criteria is NOT satisfied) and {max_score} corresponds to excellent (criteria is satisfied). Format your answer as: 'I give the assistant a score of X/{max_score}, because...', where X is your score.\n\n[[CONVERSATION]]\n\n{conversation}",
+    "system_prompt": "You are a helpful assistant that scores other AI assistants based on a given criteria and the quality of their answers.",
+    "logit_template": "Rate the quality of the AI assistant's response(s) in the conversation displayed below according to the following criteria:\n\n{context}\n\nYour score should reflect the quality of the AI assistant's response(s) with respect to the specific criteria above, ignoring other aspects of the answer (such as overall quality), and should agree with the score provided by a reasonable human evaluator. Please rate the assistant's response(s) on a scale of 1 to {max_score}, where 1 corresponds to extremely poor (criteria is NOT satisfied) and {max_score} corresponds to excellent (criteria is satisfied). Format your answer as: 'I give the assistant a score of X/{max_score}, because...', where X is your score.\n\n[[CONVERSATION]]\n\n{conversation}",
     "logit_completion_template": "I give the assistant a score of ",
-    "argmax_score_template": "Rate the quality of the AI assistant's response(s) in the conversation displayed below according to the following criteria:\n\n{criteria}\n\nYour score should reflect the quality of the AI assistant's response(s) with respect to the specific criteria above, ignoring other aspects of the answer (such as overall quality), and should agree with the score provided by a reasonable human evaluator. Begin your evaluation by providing a short explanation. After providing your explanation, please rate the response with respect to the criteria on a scale of 1 to 10 by strictly following this format: \"[[rating]]\", for example: \"Rating: [[5]]\".\n\n[[CONVERSATION]]\n\n{conversation}",
-    "argmax_score_template_no_cot": "Rate the quality of the AI assistant's response(s) in the conversation displayed below according to the following criteria:\n\n{criteria}\n\nYour score should reflect the quality of the AI assistant's response(s) with respect to the specific criteria above, ignoring other aspects of the answer (such as overall quality), and should agree with the score provided by a reasonable human evaluator. IMPORTANT: Begin your response by directly rating the AI assistant (with respect to the criteria) on a scale of 1 to 10, strictly following this format: \"[[rating]]\". For example, if you give the AI assistant a score of 5, your response should start with: \"[[5]]\".\n\n[[CONVERSATION]]\n\n{conversation}"
+    "argmax_score_template": "Rate the quality of the AI assistant's response(s) in the conversation displayed below according to the following criteria:\n\n{context}\n\nYour score should reflect the quality of the AI assistant's response(s) with respect to the specific criteria above, ignoring other aspects of the answer (such as overall quality), and should agree with the score provided by a reasonable human evaluator. Begin your evaluation by providing a short explanation. After providing your explanation, please rate the response with respect to the criteria on a scale of 1 to 10 by strictly following this format: \"[[rating]]\", for example: \"Rating: [[5]]\".\n\n[[CONVERSATION]]\n\n{conversation}",
+    "argmax_score_template_no_cot": "Rate the quality of the AI assistant's response(s) in the conversation displayed below according to the following criteria:\n\n{context}\n\nYour score should reflect the quality of the AI assistant's response(s) with respect to the specific criteria above, ignoring other aspects of the answer (such as overall quality), and should agree with the score provided by a reasonable human evaluator. IMPORTANT: Begin your response by directly rating the AI assistant (with respect to the criteria) on a scale of 1 to 10, strictly following this format: \"[[rating]]\". For example, if you give the AI assistant a score of 5, your response should start with: \"[[5]]\".\n\n[[CONVERSATION]]\n\n{conversation}"
+  }
+
+CONTEXT_TEMPLATE = {
+    "type": "logit_rating",
+    "name": "context_template",
+    "system_prompt": "You are a helpful assistant that scores other AI assistants based on the quality of their answers given a context.",
+    "logit_template": "Rate the quality of the AI assistant's response(s) in the conversation displayed below, in the following context:\n\n{context}\n\nYour score should emphasize the quality of the AI assistant's response(s) given the context and should agree with the score provided by a reasonable human evaluator. Please rate the assistant's response(s) on a scale of 1 to {max_score}, where 1 corresponds to extremely poor (criteria is NOT satisfied) and {max_score} corresponds to excellent (criteria is satisfied). Format your answer as: 'I give the assistant a score of X/{max_score}, because...', where X is your score.\n\n[[CONVERSATION]]\n\n{conversation}",
+    "logit_completion_template": "I give the assistant a score of ",
+    "argmax_score_template": "Rate the quality of the AI assistant's response(s) in the conversation displayed below, in the following context:\n\n{context}\n\nYour score should emphasize the quality of the AI assistant's response(s) given the context and should agree with the score provided by a reasonable human evaluator. Begin your evaluation by providing a short explanation. After providing your explanation, please rate the response with respect to the criteria on a scale of 1 to 10 by strictly following this format: \"[[rating]]\", for example: \"Rating: [[5]]\".\n\n[[CONVERSATION]]\n\n{conversation}",
+    "argmax_score_template_no_cot": "Rate the quality of the AI assistant's response(s) in the conversation displayed below, in the following context:\n\n{context}\n\nYour score should emphasize the quality of the AI assistant's response(s) given the context and should agree with the score provided by a reasonable human evaluator. IMPORTANT: Begin your response by directly rating the AI assistant on a scale of 1 to 10, strictly following this format: \"[[rating]]\". For example, if you give the AI assistant a score of 5, your response should start with: \"[[5]]\".\n\n[[CONVERSATION]]\n\n{conversation}"
   }
 
 class LlamaRewardModel(PreTrainedModel):
@@ -70,40 +80,47 @@ if __name__ == "__main__":
   parser.add_argument('--max_score', type=int, default=7)
   parser.add_argument('--use_cot', action='store_true')
 
-  parser.add_argument('--dataset', type=str, default='RPR')
+  parser.add_argument('--dataset', type=str, default='rpr_criteria')
+  parser.add_argument('--scenario_to_criteria', action='store_true') # whether to translate scenarios to criteria before scoring
+  
   parser.add_argument('--split', type=str, default='all')
-  parser.add_argument('--max_samples', type=int, default=10)
-  parser.add_argument('--tag', type=str, default='')
+  parser.add_argument('--max_samples', type=int, default=3000)
+  parser.add_argument('--tag', type=str, default='Mar_19')
 
-  parser.add_argument('--no_criteria', action='store_true') # if we want to keep the RM blind to the criteria
-
+  parser.add_argument('--context_mode', type=str, default='context') # {context, no_context, empty_context}
 
   args = parser.parse_args()
-  assert args.dataset.lower() == 'rpr'
-  #mtbench = MTBench(split=args.split, max_samples=args.max_samples, flatten=True)
-  dataset = RPR(split=args.split, max_samples=args.max_samples, flatten=True)
+  assert args.dataset.lower() in ['rpr_criteria', 'rpr_scenarios', 'mt_bench']
 
   flattened = False
   if 'deberta' in args.model_name:
     rm = AutoModelForSequenceClassification.from_pretrained(args.model_name).cuda()
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-    dataset = RPR(split=args.split, max_samples=args.max_samples, flatten=False)
   elif 'ultra' in args.model_name.lower():
     tokenizer = LlamaTokenizer.from_pretrained("openbmb/UltraRM-13b")
     rm = LlamaRewardModel.from_pretrained("openbmb/UltraRM-13b", load_in_8bit=True)
-    dataset = RPR(split=args.split, max_samples=args.max_samples, flatten=False)
   else:
     flattened = True
-    if not args.no_criteria:
+
+  if args.dataset.lower() == 'rpr_criteria':
+    TEMPLATE = CRITERIA_TEMPLATE
+    dataset = RPRCriteria(split=args.split, max_samples=args.max_samples, flatten=flattened)
+  elif args.dataset.lower() == 'rpr_scenarios':
+    TEMPLATE = CONTEXT_TEMPLATE
+    dataset = RPRScenarios(split=args.split, max_samples=args.max_samples, flatten=flattened)
+  elif args.dataset.lower() == 'mt_bench':
+    TEMPLATE = CONTEXT_TEMPLATE
+    dataset = MTBenchTurn2(split=args.split, max_samples=args.max_samples, flatten=flattened)
+
+  if not 'deberta' in args.model_name and not 'ultra' in args.model_name.lower():
+    if args.context_mode in ['context', 'empty_context']:
       rm = LMRM(args.model_name, template=TEMPLATE, model_type=args.model_type, max_score=args.max_score, use_cot=args.use_cot)
     else:
       rm = LMRM(args.model_name, template='basic_template', model_type=args.model_type, max_score=args.max_score, use_cot=args.use_cot)
-    dataset = RPR(split=args.split, max_samples=args.max_samples, flatten=True)
-
     
   print(f"Running {len(dataset)} samples for dataset {args.dataset} split {args.split}...")
 
-  save_file = f"results/{args.dataset}__{'criteria' if not args.no_criteria else 'no_criteria'}__{args.split}__{len(dataset)}__{args.model_name.split('/')[-1]}__{args.model_type}__{args.max_score}__{args.use_cot}__{args.tag}.json"
+  save_file = f"results/{args.dataset}__{args.context_mode}__{args.split}__{len(dataset)}__{args.model_name.split('/')[-1]}__{args.model_type}__{args.max_score}__{args.use_cot}__{args.tag}.json"
 
   if os.path.exists(save_file):
     print(f"loading progress...")
@@ -126,19 +143,21 @@ if __name__ == "__main__":
         dataset[i]['labels'] = [dataset[i]['labels']]
 
       if hasattr(rm, 'score'):
-        if not args.no_criteria:
+        if args.context_mode in ['context', 'empty_context']:
+          context = dataset[i]['context'] if args.context_mode == 'context' else '[omitted]'
           rm.template = deepcopy(TEMPLATE)
-          rm.template['logit_template'] = rm.template['logit_template'].replace('{criteria}', dataset[i]['criteria'])
-          rm.template['argmax_score_template'] = rm.template['argmax_score_template'].replace('{criteria}', dataset[i]['criteria'])
-          rm.template['argmax_score_template_no_cot'] = rm.template['argmax_score_template_no_cot'].replace('{criteria}', dataset[i]['criteria'])
+          rm.template['logit_template'] = rm.template['logit_template'].replace('{context}', context)
+          rm.template['argmax_score_template'] = rm.template['argmax_score_template'].replace('{context}', context)
+          rm.template['argmax_score_template_no_cot'] = rm.template['argmax_score_template_no_cot'].replace('{context}', context)
         
-        try:
-          scores = rm.score([
-            dataset[i]['a'],
-            dataset[i]['b']
-          ])
-        except Exception as e:
-          raise
+        with torch.no_grad():
+          try:
+            scores = rm.score([
+              dataset[i]['a'],
+              dataset[i]['b']
+            ])
+          except Exception as e:
+            raise
 
         labels = dataset[i]['labels']
       
@@ -152,15 +171,17 @@ if __name__ == "__main__":
               compln_a = flatten_conversation(dataset[i][letter][turn*2+1:turn*2+2])
 
               if 'deberta' in args.model_name:
-                if not args.no_criteria:
-                  prompt_a = f"User: Please respond to the following query in order to maximize the score that a reasonable human evaluator would assign given the following criteria: {dataset[i]['criteria']}.\n\nQuery: {prompt_a}"
+                if args.context_mode in ['context', 'empty_context']:
+                  context = dataset[i]['context'] if args.context_mode == 'context' else '[omitted]'
+                  prompt_a = f"User: Please respond to the following query in order to maximize the score that a reasonable human evaluator would assign given the following criteria or context: {context}.\n\nQuery: {prompt_a}"
                 else:
                   prompt_a = f"Please continue the following conversation by providing the Assistant's response:\n\n[[Conversation]]\n\n{prompt_a}"
                 inputs = tokenizer(prompt_a, compln_a, return_tensors='pt').to('cuda')
                 _scores.append(rm(**inputs).logits[0].cpu().item())
               elif 'ultra' in args.model_name.lower():
-                if not args.no_criteria:  
-                  prompt_a = prompt_a.replace('User:', f"Human: Please respond to the following query in order to maximize the score that a reasonable human evaluator would assign given the following criteria: {dataset[i]['criteria']}.\n\nQuery: ") + f'\n\n{compln_a}'
+                if args.context_mode in ['context', 'empty_context']:  
+                  context = dataset[i]['context'] if args.context_mode == 'context' else '[omitted]'
+                  prompt_a = prompt_a.replace('User:', f"Human: Please respond to the following query in order to maximize the score that a reasonable human evaluator would assign given the following criteria or context: {context}.\n\nQuery: ") + f'\n\n{compln_a}'
                 else:             
                   prompt_a = prompt_a.replace('User:', 'Human:') + f'\n\n{compln_a}'
                 inputs = tokenizer(prompt_a, return_tensors='pt').to('cuda')
@@ -182,7 +203,7 @@ if __name__ == "__main__":
       results[i] = {
         'a': dataset[i]['a'] if flattened else flatten_conversation(dataset[i]['a']),
         'b': dataset[i]['b'] if flattened else flatten_conversation(dataset[i]['b']),
-        'criteria': dataset[i]['criteria'],
+        'context': dataset[i]['context'] if args.context_mode == 'context' else '[omitted]',
         'labels': labels,
         'scores': scores
       }
