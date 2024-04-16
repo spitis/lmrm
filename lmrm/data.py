@@ -293,3 +293,48 @@ class MTBenchTurn2(MultiTurnContextComparisonDataset):
       })
 
     self.samples = samples[:self.max_samples] if self.max_samples is not None else samples
+
+
+class CBACriteria(MultiTurnContextComparisonDataset):
+  def __init__(self, mode='inferred', **kwargs):
+    super().__init__(**kwargs)
+
+    assert mode in ['inferred', 'oracle']
+
+    import glob
+    files = glob.glob('./RPR/cba_inference_results*.json')
+    dataset = {}
+    for f in files:
+      with open(f, 'r') as f:
+        d = json.load(f)
+        dataset.update(d)
+    
+    keys = list(dataset.keys())
+    # seed numpy and choose 100 at random
+    np.random.seed(42)
+    np.random.shuffle(keys)
+
+    samples = []
+    num_samples = self.max_samples if self.max_samples is not None else len(keys)
+
+    for k in keys[:num_samples]:
+      # randomly sample the criteria
+
+      try:
+
+        samples.append({
+          'a': [
+            {'role': 'user', 'content': dataset[k]['prompt']},
+            {'role': 'assistant', 'content': dataset[k]['chosen']}
+          ],
+          'b': [
+            {'role': 'user', 'content': dataset[k]['prompt']},
+            {'role': 'assistant', 'content': dataset[k]['rejected']}
+          ],
+          'context': str(dataset[k]['most_likely_inferred_criteria']) if mode == 'inferred' else str(dataset[k]['most_likely_oracle_criteria']),
+          'labels': 0
+        })
+      except:
+        continue
+
+    self.samples = samples

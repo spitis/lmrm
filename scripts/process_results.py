@@ -79,6 +79,14 @@ if __name__ == "__main__":
           # we can compute turnwise accuracy
           turnwise_scores += scores
           turnwise_labels += labels.tolist()
+      elif isinstance(scores[0], str) or isinstance(scores[1], str): # openai
+        # try to convert to float; if not then "5"
+        all_scores.append([])
+        for _s in scores:
+          try:
+            all_scores[-1].append(5.0 if _s == "None" else float(_s))
+          except:
+            all_scores[-1].append(5.0)
       else:
         all_scores.append(scores)
       if len(labels.shape) == 1:
