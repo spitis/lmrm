@@ -8,9 +8,10 @@ if __name__ == "__main__":
   parser.add_argument('--dataset', type=str, default='mt_bench')
   parser.add_argument('--model', type=str, default='all')
   parser.add_argument('--split', type=str, default='all')
-  parser.add_argument('--max_samples', type=int, default=100)
+  parser.add_argument('--max_samples', type=str, default='100')
   parser.add_argument('--tag', type=str, default='')
   parser.add_argument('--dedupe_mtbench', action='store_true')
+  parser.add_argument('--ensemble', action='store_true') #for ensemble scores
   args = parser.parse_args()
 
 
@@ -86,6 +87,12 @@ if __name__ == "__main__":
         all_labels.append(labels)
 
     print(f"\n{filename}:")
+
+    if args.ensemble and len(all_scores[0].shape) == 2:
+      all_scores = [s.mean(1) for s in all_scores]
+      turnwise_scores = []
+    
+    
     try:
       if len(turnwise_scores):
         not_turnwise_ties = np.abs(turnwise_labels) > 0.1
@@ -94,7 +101,7 @@ if __name__ == "__main__":
         turnwise_preds = turnwise_scores > 0
         turnwise_labels = (np.array(turnwise_labels) > 0)[not_turnwise_ties]
         turnwise_acc = (turnwise_preds == turnwise_labels).mean()
-        print(f"Turnwise accuracy: {turnwise_acc:.3f} (N = {len(turnwise_scores)})")
+        print(f"Turnwise accuracy: {turnwise_acc:.4f} (N = {len(turnwise_scores)})")
 
       not_ties = np.abs(all_labels) > 0.05
       #mild_pref = np.abs(all_labels) > 0.24
@@ -108,9 +115,9 @@ if __name__ == "__main__":
       #acc_mild = (preds[mild_pref] == labels[mild_pref]).mean()
       acc_strict = (preds[strict_pref] == labels[strict_pref]).mean()
 
-      print(f"Mild pref accuracy: {acc:.3f} (N = {not_ties.sum()})")
+      print(f"Mild pref accuracy: {acc:.4f} (N = {not_ties.sum()})")
       #print(f"Mild pref accuracy: {acc_mild:.3f} (N = {mild_pref.sum()})")
-      print(f"Strict pref accuracy: {acc_strict:.3f} (N = {strict_pref.sum()})")
+      print(f"Strict pref accuracy: {acc_strict:.4f} (N = {strict_pref.sum()})")
   
     except Exception as e:
       print(f"WARNING: could not compute turnwise accuracy for {filename}")
